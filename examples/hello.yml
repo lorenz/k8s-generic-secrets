@@ -1,0 +1,9 @@
+apiVersion: dolansoft.org/v1beta1
+kind: SecretClaim
+metadata:
+  name: hello
+spec:
+  tokenFields:
+    - keytothekingdom
+  fixedFields:
+    hello: world
