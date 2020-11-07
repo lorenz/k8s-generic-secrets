@@ -51,7 +51,7 @@ rules:
   - patch
   - update
 - apiGroups:
-  - "dolansoft.org/v1beta1"
+  - "dolansoft.org"
   resources:
   - secretclaims
   verbs:
@@ -81,8 +81,7 @@ roleRef:
   kind: ClusterRole
   name: k8s-generic-secrets
 subjects:
-- apiGroup: rbac.authorization.k8s.io
-  kind: ServiceAccount
+- kind: ServiceAccount
   namespace: kube-system
   name: k8s-generic-secrets
 ---
@@ -105,7 +104,7 @@ spec:
       serviceAccountName: k8s-generic-secrets
       containers:
       - name: k8s-generic-secrets
-        image: docker.dolansoft.org/dolansoft/k8s-generic-secrets:master
+        image: docker.dolansoft.org/dolansoft/k8s-generic-secrets:936795ac8f9769b2638a54d8445c723276385713
         resources:
           requests:
             memory: "64Mi"
