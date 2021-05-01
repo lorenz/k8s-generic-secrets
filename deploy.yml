@@ -25,13 +25,49 @@ spec:
                   description: These fields are copied as-is into the secret
                   additionalProperties:
                     type: string
+                x509:
+                  type: object
+                  description: Claim for an X.509 certificate
+                  properties:
+                    caSecretName:
+                      description: |
+                        Name of the secret storing the CA. Must be in the same namespace as this
+                        claim. If unset and isCA is true the certificate is a root CA.
+                      type: string
+                    isCA:
+                      description: Determines if the certificate is a CA. Defaults to false.
+                      type: boolean
+                    commonName:
+                      description: Specifies a custom common name. Defaults to the claim name if unset.
+                      type: string
+                    rotateEvery:
+                      description: |
+                        Determines the validity period of the certificate. If unset the certificate
+                        is eternally valid. If the certificate is nearing expiration it is reissued
+                        automatically.
+                      type: string
+                    serviceNames:
+                      description: |
+                        List of service names to be included in the subject alternative names of the
+                        certificate. Services need to be in the same namespace as the claim.
+                        Specifying services here is preferred over specifying them in extraNames
+                        as all valid forms (with/without namespace and cluster domain) are
+                        automatically included and the claim is namespace-independant.
+                      type: array
+                      items:
+                        type: string
+                    extraNames:
+                      type: array
+                      description: Extra DNS names to be included in the subject alternative names.
+                      items:
+                        type: string
   scope: Namespaced
   names:
     plural: secretclaims
     singular: secretclaim
     kind: SecretClaim
     shortNames:
-    - secc
+      - secc
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -39,31 +75,31 @@ metadata:
   name: k8s-generic-secrets
   namespace: kube-system
 rules:
-- apiGroups:
-  - ""
-  resources:
-  - "secrets"
-  verbs:
-  - get
-  - list
-  - watch
-  - create
-  - patch
-  - update
-- apiGroups:
-  - "dolansoft.org"
-  resources:
-  - secretclaims
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - events.k8s.io
-  resources:
-  - events
-  verbs:
-  - create
+  - apiGroups:
+      - ""
+    resources:
+      - "secrets"
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - patch
+      - update
+  - apiGroups:
+      - "dolansoft.org"
+    resources:
+      - secretclaims
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - events.k8s.io
+    resources:
+      - events
+    verbs:
+      - create
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -81,9 +117,9 @@ roleRef:
   kind: ClusterRole
   name: k8s-generic-secrets
 subjects:
-- kind: ServiceAccount
-  namespace: kube-system
-  name: k8s-generic-secrets
+  - kind: ServiceAccount
+    namespace: kube-system
+    name: k8s-generic-secrets
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -103,12 +139,12 @@ spec:
       enableServiceLinks: false
       serviceAccountName: k8s-generic-secrets
       containers:
-      - name: k8s-generic-secrets
-        image: docker.dolansoft.org/dolansoft/k8s-generic-secrets:936795ac8f9769b2638a54d8445c723276385713
-        resources:
-          requests:
-            memory: "64Mi"
-            cpu: "10m"
-          limits:
-            memory: "64Mi"
-            cpu: "1"
+        - name: k8s-generic-secrets
+          image: docker.dolansoft.org/dolansoft/k8s-generic-secrets:936795ac8f9769b2638a54d8445c723276385713
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "10m"
+            limits:
+              memory: "64Mi"
+              cpu: "1"

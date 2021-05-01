@@ -3,14 +3,21 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"flag"
 	"fmt"
 	"io"
 	"log"
+	"math/big"
 	"time"
 
 	"git.dolansoft.org/dolansoft/k8s-generic-secrets/apis/dolansoft.org/v1beta1"
@@ -27,6 +34,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
+	"maze.io/x/duration"
 )
 
 const (
@@ -35,10 +43,16 @@ const (
 )
 
 var (
+	// From RFC 5280 Section 4.1.2.5
+	unknownNotAfter = time.Unix(253402300799, 0)
+)
+
+var (
 	masterURL = flag.String("master", "",
 		"The address of the Kubernetes API server. Overrides any value in kubeconfig. Only required if out-of-cluster.")
 	kubeconfig = flag.String("kubeconfig", "",
 		"Path to a kubeconfig. Only required if out-of-cluster.")
+	clusterDomain = flag.String("cluster-domain", "cluster.local", "Kubernetes DNS cluster domain (default cluster.local)")
 )
 
 type controller struct {
@@ -83,6 +97,122 @@ func (c *controller) processQueueItems(queue workqueue.RateLimitingInterface, pr
 	}
 }
 
+func (c *controller) certFromSecret(ctx context.Context, namespace string, name string) (*x509.Certificate, crypto.PrivateKey, error) {
+	caSecret, err := c.kclient.CoreV1().Secrets(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to get caSecret: %w", err)
+	}
+	caCertPEM := caSecret.Data["ca.crt"]
+	caCertBlock, _ := pem.Decode(caCertPEM)
+	if caCertBlock == nil {
+		return nil, nil, fmt.Errorf("\"ca.crt\" contains no PEM data in secret \"%s\": %w", name, err)
+	}
+	caCert, err := x509.ParseCertificate(caCertBlock.Bytes)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to parse \"ca.crt\" certificate: %w", err)
+	}
+	caKeyPEM := caSecret.Data["ca.key"]
+	caKeyBlock, _ := pem.Decode(caKeyPEM)
+	if caCertBlock == nil {
+		return nil, nil, fmt.Errorf("\"ca.key\" contains no PEM data in secret \"%s\": %w", name, err)
+	}
+	caKey, err := x509.ParseECPrivateKey(caKeyBlock.Bytes)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to parse \"ca.key\" key: %w", err)
+	}
+	return caCert, caKey, nil
+}
+
+func (c *controller) issueCertificate(ctx context.Context, claim *v1beta1.SecretClaim, data map[string][]byte) error {
+	x509spec := claim.Spec.X509Claim
+	var commonName string = x509spec.CommonName
+	if commonName == "" {
+		commonName = claim.Name
+	}
+	var notAfter time.Time = unknownNotAfter
+	if x509spec.RotateEvery != "" {
+		d, err := duration.ParseDuration(x509spec.RotateEvery)
+		if err != nil {
+			return fmt.Errorf("cannot parse rotateEvery duration: %w", err)
+		}
+		notAfter = time.Now().Add(time.Duration(d))
+	}
+	serialNumberLimit := new(big.Int).Lsh(big.NewInt(1), 127)
+	serialNumber, err := rand.Int(rand.Reader, serialNumberLimit)
+	if err != nil {
+		return fmt.Errorf("failed to generate serial number: %v", err)
+	}
+
+	var keyUsage x509.KeyUsage = x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment
+	if x509spec.IsCA {
+		keyUsage = x509.KeyUsageCertSign | x509.KeyUsageCRLSign | x509.KeyUsageDigitalSignature
+	}
+
+	eku := []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth}
+	if x509spec.IsCA {
+		eku = nil
+	}
+
+	var dnsNames []string
+	for _, svc := range x509spec.ServiceNames {
+		dnsNames = append(dnsNames, svc, svc+"."+claim.Namespace, svc+"."+claim.Namespace+".svc."+*clusterDomain)
+	}
+	for _, extraName := range x509spec.ExtraNames {
+		dnsNames = append(dnsNames, extraName)
+	}
+
+	template := &x509.Certificate{
+		SerialNumber: serialNumber,
+		Subject: pkix.Name{
+			CommonName: commonName,
+		},
+		NotBefore:             time.Now(),
+		NotAfter:              notAfter,
+		BasicConstraintsValid: true,
+		IsCA:                  x509spec.IsCA,
+		KeyUsage:              keyUsage,
+		ExtKeyUsage:           eku,
+		DNSNames:              dnsNames,
+	}
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return fmt.Errorf("failed to generate key: %w", err)
+	}
+
+	var certRaw []byte
+
+	if x509spec.CASecretName == "" {
+		certRaw, err = x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+		if err != nil {
+			return fmt.Errorf("failed to sign certificate: %w", err)
+		}
+	} else {
+		caCert, caKey, err := c.certFromSecret(ctx, claim.Namespace, x509spec.CASecretName)
+		if err != nil {
+			return err
+		}
+		certRaw, err = x509.CreateCertificate(rand.Reader, template, caCert, &key.PublicKey, caKey)
+		if err != nil {
+			return fmt.Errorf("failed to sign certificate: %w", err)
+		}
+	}
+
+	keyRaw, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		return fmt.Errorf("cannot marshal EC private key: %w", err)
+	}
+
+	if x509spec.IsCA {
+		data["ca.crt"] = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certRaw})
+		data["ca.key"] = pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyRaw})
+	} else {
+		data["tls.crt"] = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certRaw})
+		data["tls.key"] = pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyRaw})
+	}
+	return nil
+}
+
 func (c *controller) reconcileSC(key string) error {
 	namespace, name, err := cache.SplitMetaNamespaceKey(key)
 	if err != nil {
@@ -99,15 +229,21 @@ func (c *controller) reconcileSC(key string) error {
 	oldSecret, err := c.kclient.CoreV1().Secrets(namespace).Get(ctx, name, metav1.GetOptions{})
 	if errors.IsNotFound(err) {
 		newData := make(map[string][]byte)
-		for k, v := range sc.Spec.FixedFields {
-			newData[k] = []byte(v)
-		}
-		for _, field := range sc.Spec.TokenFields {
-			newToken := make([]byte, tokenLength)
-			if _, err := io.ReadFull(rand.Reader, newToken); err != nil {
-				return fmt.Errorf("failed to read randomness: %w", err)
+		if sc.Spec.X509Claim != nil {
+			if err := c.issueCertificate(ctx, sc, newData); err != nil {
+				return fmt.Errorf("failed to issue certificate: %w", err)
 			}
-			newData[field] = []byte(hex.EncodeToString(newToken))
+		} else {
+			for k, v := range sc.Spec.FixedFields {
+				newData[k] = []byte(v)
+			}
+			for _, field := range sc.Spec.TokenFields {
+				newToken := make([]byte, tokenLength)
+				if _, err := io.ReadFull(rand.Reader, newToken); err != nil {
+					return fmt.Errorf("failed to read randomness: %w", err)
+				}
+				newData[field] = []byte(hex.EncodeToString(newToken))
+			}
 		}
 		newSecret := corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{
@@ -124,6 +260,10 @@ func (c *controller) reconcileSC(key string) error {
 	}
 	if err != nil {
 		return err
+	}
+	if sc.Spec.X509Claim != nil {
+		// TODO(lorenz): Implement reconciliation for X.509
+		return nil
 	}
 	newData := make(map[string][]byte)
 	for k, v := range sc.Spec.FixedFields {

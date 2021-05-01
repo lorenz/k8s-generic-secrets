@@ -12,9 +12,19 @@ const (
 	Name      string = Plural + "." + GroupName
 )
 
+type X509Claim struct {
+	CASecretName string   `json:"caSecretName"`
+	IsCA         bool     `json:"isCA"`
+	CommonName   string   `json:"commonName"`
+	RotateEvery  string   `json:"rotateEvery"`
+	ServiceNames []string `json:"serviceNames"`
+	ExtraNames   []string `json:"extraNames"`
+}
+
 type SecretClaimSpec struct {
 	TokenFields []string          `json:"tokenFields"`
 	FixedFields map[string]string `json:"fixedFields"`
+	X509Claim   *X509Claim        `json:"x509,omitempty"`
 }
 
 type SecretClaimStatus struct {
