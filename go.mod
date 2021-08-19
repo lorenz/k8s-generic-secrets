@@ -10,4 +10,5 @@ require (
 	k8s.io/client-go v0.19.3
 	k8s.io/klog/v2 v2.4.0
 	k8s.io/utils v0.0.0-20201104234853-8146046b121e // indirect
+	maze.io/x/duration v0.0.0-20160924141736-faac084b6075 // indirect
 )
