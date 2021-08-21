@@ -116,7 +116,14 @@ func (c *controller) certFromSecret(ctx context.Context, namespace string, name 
 	if caCertBlock == nil {
 		return nil, nil, fmt.Errorf("\"ca.key\" contains no PEM data in secret \"%s\": %w", name, err)
 	}
-	caKey, err := x509.ParseECPrivateKey(caKeyBlock.Bytes)
+	var caKey crypto.PrivateKey
+	if caKeyBlock.Type == "EC PRIVATE KEY" {
+		caKey, err = x509.ParseECPrivateKey(caKeyBlock.Bytes)
+	} else if caKeyBlock.Type == "PRIVATE KEY" {
+		caKey, err = x509.ParsePKCS8PrivateKey(caKeyBlock.Bytes)
+	} else {
+		return nil, nil, fmt.Errorf("unknown PEM block type \"%s\" in private key", caKeyBlock.Type)
+	}
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to parse \"ca.key\" key: %w", err)
 	}
@@ -198,17 +205,25 @@ func (c *controller) issueCertificate(ctx context.Context, claim *v1beta1.Secret
 		}
 	}
 
-	keyRaw, err := x509.MarshalECPrivateKey(key)
+	var keyRaw []byte
+	var keyType string
+	if x509spec.LegacySEC1PrivateKey {
+		keyRaw, err = x509.MarshalECPrivateKey(key)
+		keyType = "EC PRIVATE KEY"
+	} else {
+		keyRaw, err = x509.MarshalPKCS8PrivateKey(key)
+		keyType = "PRIVATE KEY"
+	}
 	if err != nil {
 		return fmt.Errorf("cannot marshal EC private key: %w", err)
 	}
 
 	if x509spec.IsCA {
 		data["ca.crt"] = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certRaw})
-		data["ca.key"] = pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyRaw})
+		data["ca.key"] = pem.EncodeToMemory(&pem.Block{Type: keyType, Bytes: keyRaw})
 	} else {
 		data["tls.crt"] = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certRaw})
-		data["tls.key"] = pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyRaw})
+		data["tls.key"] = pem.EncodeToMemory(&pem.Block{Type: keyType, Bytes: keyRaw})
 	}
 	return nil
 }

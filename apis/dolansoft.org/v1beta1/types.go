@@ -13,12 +13,13 @@ const (
 )
 
 type X509Claim struct {
-	CASecretName string   `json:"caSecretName"`
-	IsCA         bool     `json:"isCA"`
-	CommonName   string   `json:"commonName"`
-	RotateEvery  string   `json:"rotateEvery"`
-	ServiceNames []string `json:"serviceNames"`
-	ExtraNames   []string `json:"extraNames"`
+	CASecretName         string   `json:"caSecretName"`
+	IsCA                 bool     `json:"isCA"`
+	CommonName           string   `json:"commonName"`
+	RotateEvery          string   `json:"rotateEvery"`
+	ServiceNames         []string `json:"serviceNames"`
+	ExtraNames           []string `json:"extraNames"`
+	LegacySEC1PrivateKey bool     `json:"legacySEC1PrivateKey"`
 }
 
 type SecretClaimSpec struct {

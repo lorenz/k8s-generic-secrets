@@ -61,6 +61,9 @@ spec:
                       description: Extra DNS names to be included in the subject alternative names.
                       items:
                         type: string
+                    legacySEC1PrivateKey:
+                      description: If set to true, the private key is generated in the legacy SEC1 encoding.
+                      type: boolean
   scope: Namespaced
   names:
     plural: secretclaims
