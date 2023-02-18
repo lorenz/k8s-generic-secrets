@@ -3,6 +3,7 @@ module git.dolansoft.org/dolansoft/k8s-generic-secrets
 go 1.14
 
 require (
+	github.com/google/uuid v1.3.0 // indirect
 	k8s.io/api v0.26.1
 	k8s.io/apimachinery v0.26.1
 	k8s.io/client-go v0.26.1

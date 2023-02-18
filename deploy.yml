@@ -20,6 +20,34 @@ spec:
                   description: These fields are filled with a randomly generated 128 bit token
                   items:
                     type: string
+                customTokenFields:
+                  type: object
+                  properties:
+                    length:
+                      type: number
+                      description: |
+                        Length of the token which should be generated. This is the number of bytes
+                        for the base64, hex and raw encodings and the number of characters for the
+                        characterset encoding. It is ignored for the uuid encoding.
+                    encoding:
+                      type: string
+                      enum: [ base64, base64url, hex, upperhex, characterset, raw, uuid ]
+                      description: |
+                        Encoding to use
+                    characterSet:
+                      type: string
+                      description: |
+                        All characters (unicode code points) in this string can be used to
+                        make up the token. Only used in the characterset encoding.
+                    prefix:
+                      type: string
+                      description: |
+                        Prefix to put before the generated token.
+                    suffix:
+                      type: string
+                      description: |
+                        Suffix to put after the generated token.
+                  required: ["encoding"]
                 fixedFields:
                   type: object
                   description: These fields are copied as-is into the secret
@@ -143,7 +171,7 @@ spec:
       serviceAccountName: k8s-generic-secrets
       containers:
         - name: k8s-generic-secrets
-          image: docker.dolansoft.org/dolansoft/k8s-generic-secrets:936795ac8f9769b2638a54d8445c723276385713
+          image: docker.dolansoft.org/dolansoft/k8s-generic-secrets:58e64ff26371b7104c8d98051df70f2162febd05
           resources:
             requests:
               memory: "64Mi"

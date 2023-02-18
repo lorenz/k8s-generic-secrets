@@ -58,7 +58,10 @@ func (c *Clientset) Tracker() testing.ObjectTracker {
 	return c.tracker
 }
 
-var _ clientset.Interface = &Clientset{}
+var (
+	_ clientset.Interface = &Clientset{}
+	_ testing.FakeClient  = &Clientset{}
+)
 
 // DolansoftV1beta1 retrieves the DolansoftV1beta1Client
 func (c *Clientset) DolansoftV1beta1() dolansoftv1beta1.DolansoftV1beta1Interface {

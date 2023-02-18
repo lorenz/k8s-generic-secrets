@@ -10,6 +10,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
@@ -17,15 +18,19 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"math/big"
+	"strings"
 	"time"
 
 	"git.dolansoft.org/dolansoft/k8s-generic-secrets/apis/dolansoft.org/v1beta1"
 	clientset "git.dolansoft.org/dolansoft/k8s-generic-secrets/generated/clientset/versioned"
 	informers "git.dolansoft.org/dolansoft/k8s-generic-secrets/generated/informers/externalversions"
 	"git.dolansoft.org/dolansoft/k8s-generic-secrets/jsonpatch"
-	corev1 "k8s.io/api/core/v1"
+	"github.com/google/uuid"
 	"k8s.io/apimachinery/pkg/api/errors"
+
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
@@ -228,6 +233,140 @@ func (c *controller) issueCertificate(ctx context.Context, claim *v1beta1.Secret
 	return nil
 }
 
+func makeCustomToken(spec *v1beta1.CustomTokenSpec) (string, error) {
+	if spec.Length > 1*1024*1024 {
+		return "", fmt.Errorf("refusing to issue tokens larger than 1 MiB")
+	}
+	var strb strings.Builder
+	strb.WriteString(spec.Prefix)
+	var raw []byte
+	if spec.Encoding != "uuid" {
+		if spec.Length < 1 {
+			return "", fmt.Errorf("length needs to be at least 1")
+		}
+		raw = make([]byte, spec.Length)
+		if _, err := io.ReadFull(rand.Reader, raw); err != nil {
+			return "", fmt.Errorf("unable to acquire randomness: %w", err)
+		}
+	}
+	switch spec.Encoding {
+	case "base64":
+		strb.WriteString(base64.StdEncoding.EncodeToString(raw))
+	case "base64url":
+		strb.WriteString(base64.RawURLEncoding.EncodeToString(raw))
+	case "hex":
+		strb.WriteString(hex.EncodeToString(raw))
+	case "upperhex":
+		strb.WriteString(strings.ToUpper(hex.EncodeToString(raw)))
+	case "characterset":
+		charset := []rune(spec.CharacterSet)
+		if len(charset) == 0 {
+			return "", fmt.Errorf("for encoding characterset at least one character needs to be in the characterset")
+		}
+		if len(charset) >= math.MaxUint32 {
+			return "", fmt.Errorf("character set needs to be smaller than 2^32 runes")
+		}
+		largestValidValue := math.MaxUint32 - (math.MaxUint32 % uint32(len(charset)))
+
+		for i := 0; i < int(spec.Length); {
+			raw := make([]byte, 4)
+			if _, err := io.ReadFull(rand.Reader, raw); err != nil {
+				return "", fmt.Errorf("unable to acquire randomness: %w", err)
+			}
+			randomNum := binary.LittleEndian.Uint32(raw)
+			if randomNum > largestValidValue {
+				// Avoid modulo bias
+				continue
+			}
+			strb.WriteRune(charset[randomNum%uint32(len(charset))])
+			i++
+		}
+	case "raw":
+		strb.Write(raw)
+	case "uuid":
+		strb.WriteString(uuid.New().String())
+	default:
+		return "", fmt.Errorf("unknown token format %q", spec.Encoding)
+	}
+	strb.WriteString(spec.Suffix)
+	return strb.String(), nil
+}
+
+func customTokenValid(spec *v1beta1.CustomTokenSpec, token string) bool {
+	if !strings.HasPrefix(token, spec.Prefix) {
+		return false
+	}
+	if !strings.HasSuffix(token, spec.Suffix) {
+		return false
+	}
+	innerToken := strings.TrimSuffix(strings.TrimPrefix(token, spec.Prefix), spec.Suffix)
+	switch spec.Encoding {
+	case "base64":
+		out, err := base64.StdEncoding.DecodeString(innerToken)
+		if err != nil {
+			return false
+		}
+		if len(out) != int(spec.Length) {
+			return false
+		}
+	case "base64url":
+		out, err := base64.RawURLEncoding.DecodeString(innerToken)
+		if err != nil {
+			return false
+		}
+		if len(out) != int(spec.Length) {
+			return false
+		}
+	case "hex":
+		out, err := hex.DecodeString(innerToken)
+		if err != nil {
+			return false
+		}
+		if len(out) != int(spec.Length) {
+			return false
+		}
+		if strings.ToLower(innerToken) != innerToken {
+			return false
+		}
+	case "upperhex":
+		out, err := hex.DecodeString(innerToken)
+		if err != nil {
+			return false
+		}
+		if len(out) != int(spec.Length) {
+			return false
+		}
+		if strings.ToUpper(innerToken) != innerToken {
+			return false
+		}
+	case "characterset":
+		charsetMap := make(map[rune]bool)
+		for _, c := range spec.CharacterSet {
+			charsetMap[c] = true
+		}
+		var i int
+		for _, c := range innerToken {
+			if !charsetMap[c] {
+				return false
+			}
+			i++
+		}
+		if i != int(spec.Length) {
+			return false
+		}
+	case "raw":
+		return len(innerToken) == int(spec.Length)
+	case "uuid":
+		_, err := uuid.Parse(innerToken)
+		if err != nil {
+			return false
+		}
+	default:
+		return false
+	}
+	return true
+}
+
 func (c *controller) reconcileSC(key string) error {
 	namespace, name, err := cache.SplitMetaNamespaceKey(key)
 	if err != nil {
@@ -258,6 +397,13 @@ func (c *controller) reconcileSC(key string) error {
 					return fmt.Errorf("failed to read randomness: %w", err)
 				}
 				newData[field] = []byte(hex.EncodeToString(newToken))
+			}
+			for field, spec := range sc.Spec.CustomTokenFields {
+				token, err := makeCustomToken(&spec)
+				newData[field] = []byte(token)
+				if err != nil {
+					return err
+				}
 			}
 		}
 		newSecret := corev1.Secret{
@@ -294,6 +440,15 @@ func (c *controller) reconcileSC(key string) error {
 				return fmt.Errorf("failed to read randomness: %w", err)
 			}
 			newData[field] = []byte(hex.EncodeToString(newToken))
+		}
+	}
+	for field, spec := range sc.Spec.CustomTokenFields {
+		if !customTokenValid(&spec, string(newData[field])) {
+			token, err := makeCustomToken(&spec)
+			newData[field] = []byte(token)
+			if err != nil {
+				return err
+			}
 		}
 	}
 	if len(newData) > 0 {

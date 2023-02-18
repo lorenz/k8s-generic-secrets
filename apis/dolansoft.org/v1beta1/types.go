@@ -22,10 +22,19 @@ type X509Claim struct {
 	LegacySEC1PrivateKey bool     `json:"legacySEC1PrivateKey"`
 }
 
+type CustomTokenSpec struct {
+	Length       int32  `json:"length"`
+	Encoding     string `json:"encoding"`
+	CharacterSet string `json:"characterSet,omitempty"`
+	Prefix       string `json:"prefix,omitempty"`
+	Suffix       string `json:"suffix,omitempty"`
+}
+
 type SecretClaimSpec struct {
-	TokenFields []string          `json:"tokenFields"`
-	FixedFields map[string]string `json:"fixedFields"`
-	X509Claim   *X509Claim        `json:"x509,omitempty"`
+	TokenFields       []string                   `json:"tokenFields"`
+	FixedFields       map[string]string          `json:"fixedFields"`
+	CustomTokenFields map[string]CustomTokenSpec `json:"customTokenFields"`
+	X509Claim         *X509Claim                 `json:"x509,omitempty"`
 }
 
 type SecretClaimStatus struct {
