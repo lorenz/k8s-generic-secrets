@@ -443,7 +443,7 @@ func (c *controller) reconcileSC(key string) error {
 		}
 	}
 	for field, spec := range sc.Spec.CustomTokenFields {
-		if !customTokenValid(&spec, string(newData[field])) {
+		if !customTokenValid(&spec, string(oldSecret.Data[field])) {
 			token, err := makeCustomToken(&spec)
 			newData[field] = []byte(token)
 			if err != nil {
